@@ -68,3 +68,32 @@ def test_invalid_status_rejected(conn):
     database.add_reel(conn, "A", "u")
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("UPDATE reels SET status = 'bogus'")
+
+
+def test_settings_roundtrip_and_overwrite(tmp_path):
+    path = tmp_path / "reels.db"
+    c = database.connect(path)
+    assert database.get_setting(c, database.HISTORICAL_CUTOFF) is None
+    database.set_setting(c, database.HISTORICAL_CUTOFF, "OLD")
+    database.set_setting(c, database.HISTORICAL_CUTOFF, "NEWCODE")
+    c.close()
+
+    c = database.connect(path)
+    assert database.get_setting(c, database.HISTORICAL_CUTOFF) == "NEWCODE"
+    c.close()
+
+
+def test_connect_upgrades_existing_db_without_losing_reels(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "reels.db"
+    old = sqlite3.connect(path)
+    old.execute(database.SCHEMA.split(";")[0])  # reels table only, like a Phase 1 database
+    old.execute("INSERT INTO reels (shortcode, reel_url) VALUES ('A', 'u')")
+    old.commit()
+    old.close()
+
+    c = database.connect(path)
+    assert database.status_counts(c)["total"] == 1
+    assert database.get_setting(c, database.HISTORICAL_CUTOFF) is None
+    c.close()

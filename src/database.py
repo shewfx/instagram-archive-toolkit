@@ -12,8 +12,14 @@ CREATE TABLE IF NOT EXISTS reels (
     attempts      INTEGER NOT NULL DEFAULT 0,
     last_error    TEXT,
     processed_at  TEXT
-)
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
+
+HISTORICAL_CUTOFF = "historical_cutoff_shortcode"
 
 
 def connect(path) -> sqlite3.Connection:
@@ -21,8 +27,22 @@ def connect(path) -> sqlite3.Connection:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
-    conn.execute(SCHEMA)
+    conn.executescript(SCHEMA)
     return conn
+
+
+def get_setting(conn, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_setting(conn, key: str, value: str) -> None:
+    with conn:
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
 
 def add_reel(conn, shortcode: str, reel_url: str) -> bool:

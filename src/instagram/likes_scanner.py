@@ -47,12 +47,14 @@ def run(
     conn,
     limit: int | None = None,
     stop_after_known: int = config.STOP_AFTER_KNOWN,
+    cutoff: str | None = None,
     log=print,
 ) -> ScanStats:
     """Core scan loop, independent of the browser.
 
     `items` yields (aria_label, open_item) per liked tile, newest first. open_item() returns the
     shortcode, raises ValueError/PlaywrightError for a failed item, or Blocked to stop everything.
+    `cutoff` is the oldest Reel to import: it is stored normally, then the scan stops.
     """
     stats = ScanStats()
     try:
@@ -78,6 +80,11 @@ def run(
                     stats.known += 1
                     stats.known_streak += 1
                     log(f"[{stats.reels}] known  {shortcode}")
+                if shortcode == cutoff:
+                    stats.stop_reason = (
+                        f"Reached the historical cutoff Reel {cutoff}. Nothing older was processed."
+                    )
+                    break
             stats.stop_reason = stop_reason(stats, limit, stop_after_known)
             if stats.stop_reason:
                 break
@@ -165,5 +172,9 @@ def liked_items(page: Page):
         yield tile.get_attribute("aria-label"), lambda t=tile: open_tile(page, t)
 
 
-def scan(page: Page, conn, limit=None, stop_after_known=config.STOP_AFTER_KNOWN, log=print):
-    return run(liked_items(page), conn, limit, stop_after_known, log)
+def scan(
+    page: Page, conn, limit=None, stop_after_known=config.STOP_AFTER_KNOWN, cutoff=None, log=print
+):
+    return run(
+        liked_items(page), conn, limit, stop_after_known=stop_after_known, cutoff=cutoff, log=log
+    )

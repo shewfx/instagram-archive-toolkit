@@ -158,3 +158,35 @@ def test_blocked_while_loading_the_grid_stops_cleanly(conn):
     stats = run(items(), conn, log=lambda _msg: None)
     assert stats.stop_reason.startswith("STOPPED: redirected to login.")
     assert database.status_counts(conn)["pending"] == 1
+
+
+def test_cutoff_is_stored_then_scan_stops_before_anything_older(conn):
+    items = [reel("A"), photo(), reel("CUT"), reel("OLDER1"), reel("OLDER2")]
+    stats = scan(conn, items, cutoff="CUT", stop_after_known=0)
+    assert "historical cutoff Reel CUT" in stats.stop_reason
+    assert stats.reels == 2
+    assert [r["shortcode"] for r in database.list_pending(conn)] == ["A", "CUT"]
+
+
+def test_cutoff_stops_even_when_already_known(conn):
+    seed(conn, ["CUT"])
+    stats = scan(conn, [reel("NEW"), reel("CUT"), reel("OLDER")], cutoff="CUT", stop_after_known=0)
+    assert "historical cutoff" in stats.stop_reason
+    assert stats.new == 1 and stats.known == 1
+
+
+def test_cutoff_never_opens_items_after_it(conn):
+    items = [reel("CUT"), ("Video, 2 of 9", lambda: pytest.fail("item past cutoff was opened"))]
+    stats = scan(conn, items, cutoff="CUT")
+    assert stats.reels == 1
+
+
+def test_no_cutoff_scans_to_the_end(conn):
+    stats = scan(conn, [reel("A"), reel("B")], cutoff=None)
+    assert stats.stop_reason == "Reached the end of the liked items."
+    assert stats.new == 2
+
+
+def test_failed_item_is_not_mistaken_for_cutoff(conn):
+    stats = scan(conn, [failing(), reel("A")], cutoff="CUT")
+    assert stats.stop_reason == "Reached the end of the liked items."

@@ -5,6 +5,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from src import config, database
+from src.instagram.urls import parse_post_url
 
 
 def open_context(p):
@@ -28,12 +29,16 @@ def cmd_scan(args):
     from src.instagram.likes_scanner import scan
 
     conn = database.connect(config.DB_PATH)
+    # Read once; the scan compares each shortcode against this string in memory.
+    cutoff = database.get_setting(conn, database.HISTORICAL_CUTOFF)
+    if cutoff:
+        print(f"Historical cutoff: {cutoff} (scan stops after storing it)")
     try:
         with sync_playwright() as p:
             ctx = open_context(p)
             try:
                 page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                stats = scan(page, conn, args.limit, args.stop_after_known)
+                stats = scan(page, conn, args.limit, args.stop_after_known, cutoff=cutoff)
             finally:
                 with suppress(PlaywrightError):  # browser may already be gone after Ctrl+C
                     ctx.close()
@@ -50,12 +55,23 @@ def cmd_scan(args):
 def cmd_status(args):
     conn = database.connect(config.DB_PATH)
     c = database.status_counts(conn)
+    cutoff = database.get_setting(conn, database.HISTORICAL_CUTOFF)
     conn.close()
     print(f"Total discovered: {c['total']}")
     print(f"Pending: {c['pending']}")
     print(f"Saved: {c['saved']}")
     print(f"Failed: {c['failed']}")
     print(f"Unavailable: {c['unavailable']}")
+    print(f"Historical cutoff: {cutoff or 'not set'}")
+
+
+def cmd_set_cutoff(args):
+    if not parse_post_url(f"/p/{args.shortcode}/"):
+        raise SystemExit(f"Not a valid shortcode: {args.shortcode!r}")
+    conn = database.connect(config.DB_PATH)
+    database.set_setting(conn, database.HISTORICAL_CUTOFF, args.shortcode)
+    conn.close()
+    print(f"Historical cutoff set to {args.shortcode}")
 
 
 def cmd_list_pending(args):
@@ -98,6 +114,9 @@ def main(argv=None):
         f"(default {config.STOP_AFTER_KNOWN})",
     )
     scan.set_defaults(func=cmd_scan)
+    cut = sub.add_parser("set-cutoff", help="oldest Reel to import; scans stop after storing it")
+    cut.add_argument("shortcode")
+    cut.set_defaults(func=cmd_set_cutoff)
     sub.add_parser("status", help="show counts by status").set_defaults(func=cmd_status)
     sub.add_parser("list-pending", help="list Reels not yet processed").set_defaults(
         func=cmd_list_pending

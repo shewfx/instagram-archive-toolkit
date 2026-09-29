@@ -83,6 +83,23 @@ A new Reel resets it to 0. Photos, other tile types and failed items never count
 > **If your first full scan was interrupted,** resume it with `--stop-after-known 0`. Otherwise the
 > rerun reaches the Reels it already found and stops before the older, unscanned part.
 
+### Historical cutoff
+
+To import history only back to a certain Reel, store that Reel's shortcode once:
+
+```sh
+python -m src.cli set-cutoff <shortcode>
+```
+
+`scan` reads the cutoff from `data/reels.db` once at startup. When it reaches that Reel, it stores
+it normally, prints that the cutoff was reached, and stops; nothing older is opened. Checking for
+the cutoff costs nothing extra: it is a plain comparison with the shortcode the scan already has,
+with no additional Instagram request, navigation or database query. `status` shows the current
+cutoff. Running `set-cutoff` again replaces it.
+
+The cutoff works alongside `--limit` and `--stop-after-known`; whichever is reached first ends the
+scan.
+
 ## How it works
 
 The scanner drives the normal Instagram website in a real Chrome window, the same pages you would
