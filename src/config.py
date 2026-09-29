@@ -29,6 +29,11 @@ NAV_TIMEOUT = 20
 # Stop after this many scrolls in a row that reveal nothing new.
 MAX_IDLE_SCROLLS = 4
 
+# `save` prints a progress summary every this many Reels.
+PROGRESS_EVERY = 25
+# `save` writes a log file per run here (gitignored, like all of data/).
+LOG_DIR = ROOT / "data" / "logs"
+
 # Stopping rules.
 # Default for --stop-after-known: consecutive already-known Reels that end a repeat scan.
 STOP_AFTER_KNOWN = 10

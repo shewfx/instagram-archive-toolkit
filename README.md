@@ -117,18 +117,43 @@ next Reel opens.
 shows the most recently saved posts at the top, so when the migration finishes your newest likes
 are at the top of Saved. Reels with no `liked_at` (found only by the likes-page scanner) go last.
 
-**Options:**
+**Options** (one of `--limit` or `--all` is required):
 
 - `--limit N` stops after N Reels.
+- `--all` keeps going until no pending Reels are left.
 - `--dry-run` opens each Reel and reports whether it would be saved, is already saved or is
   unavailable. It clicks nothing and writes nothing to the database.
 
-At the end, `save` prints the counts, the average seconds per Reel, and an estimate for the Reels
-still pending.
+Every 25 Reels (`PROGRESS_EVERY`), `save` prints a progress line: processed, newly saved, already
+saved, unavailable, failed, pending, elapsed time, seconds per Reel and estimated remaining time.
+It prints the same summary at the end. Everything it prints is also written, with timestamps, to
+`data/logs/save-<date>-<time>.log` (gitignored).
 
 **Resuming.** Each Reel's result is written to `data/reels.db` as soon as that Reel is done, with
 `processed_at` in UTC. If Chrome crashes, you press **Ctrl+C**, or the run stops on a warning, just
 run `save` again: it continues with the oldest Reel that is still `pending`. Nothing is redone.
+
+**A run stops by itself**, keeping all progress and printing the reason, when:
+
+- opening a Reel lands on a login page, a challenge/checkpoint, or anywhere other than that Reel
+- Instagram shows an action warning ("Try again later", "Action blocked", …)
+- Chrome is closed or crashes (that Reel stays `pending`)
+- 3 Reels in a row fail
+
+### Running the whole migration unattended
+
+In PowerShell, from the project folder:
+
+```powershell
+cd C:\path\to\insta-likes-to-reels
+.\.venv\Scripts\python.exe -m src.cli save --all
+```
+
+Leave the PowerShell window and the Chrome window it opens running; do not use that Chrome window
+yourself. Keep the computer awake and online: sleep pauses the run, and Reels
+that time out after waking count as failures. To stop, press **Ctrl+C** or close the window. To continue later, run the same
+command again. Check progress from another window with `.\.venv\Scripts\python.exe -m src.cli
+status`, or read the newest file in `data\logs\`.
 
 **Statuses** (`python -m src.cli status` shows the counts):
 
@@ -232,8 +257,7 @@ to hide that it is automation. Settings are in `src/config.py`:
 | `STOP_AFTER_KNOWN` | 10 | default for `--stop-after-known` |
 | `MAX_CONSECUTIVE_ERRORS` | 3 | failed Reels or items in a row that end a run |
 
-`save` takes about 8–9 s per Reel, roughly 400–450 Reels an hour. Prefer batches of a few hundred
-with breaks over one very long run.
+`save` takes about 8–9 s per Reel, roughly 400–450 Reels an hour.
 
 - **One session only.** Chrome locks `browser-profile/`, so a second `save`, `scan` or `login`
   cannot start while one is running.

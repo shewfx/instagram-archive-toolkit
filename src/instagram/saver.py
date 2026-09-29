@@ -28,8 +28,33 @@ class SaveStats:
     outcomes: dict = field(default_factory=lambda: dict.fromkeys(STATUS, 0))
     errors: int = 0
     error_streak: int = 0
-    seconds: list = field(default_factory=list)
+    started: float = field(default_factory=time.monotonic)
     stop_reason: str = ""
+
+    def seconds_per_reel(self) -> float:
+        return (time.monotonic() - self.started) / self.processed if self.processed else 0.0
+
+    def summary(self, pending: int) -> str:
+        o, avg = self.outcomes, self.seconds_per_reel()
+        return (
+            f"{self.processed} processed | newly saved {o['saved']} | "
+            f"already saved {o['already_saved']} | unavailable {o['unavailable']} | "
+            f"failed {self.errors} | pending {pending} | "
+            f"elapsed {_hms(time.monotonic() - self.started)} | {avg:.1f} s/Reel | "
+            f"remaining ~{_hms(pending * avg)}"
+        )
+
+
+def _hms(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600}:{s // 60 % 60:02}:{s % 60:02}"
+
+
+def _browser_gone(e: Exception) -> bool:
+    """Chrome was closed or crashed: every later Reel would fail too, so this stops the run."""
+    return isinstance(e, PlaywrightError) and bool(
+        re.search(r"closed|crash", str(e), re.IGNORECASE)
+    )
 
 
 def run(
@@ -38,6 +63,7 @@ def run(
     save_one: Callable[[str], str],
     dry_run: bool = False,
     log=print,
+    progress_every: int = config.PROGRESS_EVERY,
 ) -> SaveStats:
     """Core save loop, independent of the browser.
 
@@ -49,10 +75,11 @@ def run(
         for row in reels:
             code = row["shortcode"]
             stats.processed += 1
-            start = time.monotonic()
             try:
                 outcome = save_one(code)
             except (PlaywrightError, ValueError) as e:
+                if _browser_gone(e):
+                    raise  # not this Reel's fault: leave it pending
                 msg = str(e).splitlines()[0]
                 stats.errors += 1
                 stats.error_streak += 1
@@ -65,7 +92,8 @@ def run(
                 if STATUS[outcome] and not dry_run:
                     database.mark(conn, code, STATUS[outcome])
                 log(f"[{stats.processed}] {outcome:<13} {code}")
-            stats.seconds.append(time.monotonic() - start)
+            if stats.processed % progress_every == 0:
+                log(f"-- {stats.summary(database.status_counts(conn)['pending'])}")
             if stats.error_streak >= config.MAX_CONSECUTIVE_ERRORS:
                 stats.stop_reason = (
                     f"{stats.error_streak} Reels failed in a row. Instagram may be limiting "
@@ -77,7 +105,10 @@ def run(
     except Blocked as e:
         stats.stop_reason = f"STOPPED: {e} Progress is saved."
     except PlaywrightError as e:
-        stats.stop_reason = f"STOPPED on browser error: {str(e).splitlines()[0]} Progress is saved."
+        stats.stop_reason = (
+            f"STOPPED: Chrome/Playwright stopped working ({str(e).splitlines()[0]}). "
+            "Progress is saved."
+        )
     except KeyboardInterrupt:
         stats.stop_reason = "Interrupted. Progress is saved."
     return stats

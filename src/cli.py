@@ -1,6 +1,7 @@
 import argparse
 import json
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
@@ -117,34 +118,44 @@ def cmd_import_export(args):
     print(f"Unique Reels in the database: {before} -> {total}")
 
 
+def _local_now():
+    return datetime.now(timezone.utc).astimezone()
+
+
 def cmd_save(args):
     from src.instagram.saver import save
 
-    conn = database.connect(config.DB_PATH)
-    mode = "DRY RUN: nothing is clicked or stored. " if args.dry_run else ""
-    print(f"{mode}Saving pending Reels, oldest like first")
-    try:
-        with sync_playwright() as p:
-            ctx = open_context(p)
-            try:
-                page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                stats = save(page, conn, args.limit, args.dry_run)
-            finally:
-                with suppress(PlaywrightError):  # browser may already be gone after Ctrl+C
-                    ctx.close()
-        remaining = database.status_counts(conn)["pending"]
-    finally:
-        conn.close()
-    print(f"\n{stats.stop_reason}\n")
-    print(f"Reels processed: {stats.processed}")
-    for outcome, n in stats.outcomes.items():
-        if n:
-            print(f"{outcome.replace('_', ' ').capitalize()}: {n}")
-    print(f"Errors: {stats.errors}")
-    if stats.seconds:
-        avg = sum(stats.seconds) / len(stats.seconds)
-        print(f"Average seconds per Reel: {avg:.1f} ({3600 / avg:.0f} Reels/hour)")
-        print(f"Pending: {remaining} (about {remaining * avg / 3600:.1f} h at this pace)")
+    config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = config.LOG_DIR / f"save-{_local_now():%Y%m%d-%H%M%S}.log"
+    with open(log_path, "a", encoding="utf-8") as log_file:
+
+        def log(msg=""):
+            line = f"{_local_now():%Y-%m-%d %H:%M:%S}  {msg}"
+            print(line, flush=True)
+            log_file.write(line + "\n")
+            log_file.flush()
+
+        conn = database.connect(config.DB_PATH)
+        mode = "DRY RUN: nothing is clicked or stored. " if args.dry_run else ""
+        scope = "all pending Reels" if args.all else f"up to {args.limit} Reels"
+        pending = database.status_counts(conn)["pending"]
+        log(f"{mode}Saving {scope}, oldest like first. Pending: {pending}. Log: {log_path}")
+        try:
+            with sync_playwright() as p:
+                ctx = open_context(p)
+                try:
+                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                    stats = save(page, conn, args.limit, args.dry_run, log=log)
+                finally:
+                    with suppress(PlaywrightError):  # browser may already be gone after Ctrl+C
+                        ctx.close()
+            pending = database.status_counts(conn)["pending"]
+        finally:
+            conn.close()
+        log(stats.stop_reason)
+        log(f"Final: {stats.summary(pending)}")
+        if stats.processed:
+            log(f"Rate: {3600 / stats.seconds_per_reel():.0f} Reels/hour")
 
 
 def positive_int(value):
@@ -190,7 +201,11 @@ def main(argv=None):
         "import-export", help="add Reels from data/liked_reels_export.json to the database"
     ).set_defaults(func=cmd_import_export)
     save = sub.add_parser("save", help="save pending Reels to Saved, oldest like first")
-    save.add_argument("--limit", type=positive_int, help="stop after this many Reels")
+    how_many = save.add_mutually_exclusive_group(required=True)
+    how_many.add_argument("--limit", type=positive_int, help="stop after this many Reels")
+    how_many.add_argument(
+        "--all", action="store_true", help="keep going until no pending Reels are left"
+    )
     save.add_argument(
         "--dry-run",
         action="store_true",
