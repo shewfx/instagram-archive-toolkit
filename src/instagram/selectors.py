@@ -34,3 +34,17 @@ SCROLL_GRID_JS = """
   (el || document.scrollingElement).scrollBy(0, (el || window).clientHeight || 800);
 }
 """
+
+
+# --- Phase 2: saving. Verified 2026-09-29 on https://www.instagram.com/p/<shortcode>/ ---
+#
+# - The post's bookmark is a [role=button] holding svg[aria-label="Save"] when unsaved and
+#   svg[aria-label="Remove"] once saved (to All posts, whatever the collections).
+# - Clicking Save also opens a "Collections" popover. The tool never touches it; it closes when
+#   the next Reel opens. Clicking Remove would unsave, so the tool never clicks it.
+UNSAVED = '[role=button]:has(svg[aria-label="Save"])'
+SAVED = '[role=button]:has(svg[aria-label="Remove"])'
+# Text Instagram shows for a deleted or private post.
+UNAVAILABLE_TEXT = r"this page isn.t available"
+# Only consulted after an expected step failed. Unverified: none of these could be observed.
+BLOCK_TEXT = r"try again later|we restrict certain activity|action blocked"
