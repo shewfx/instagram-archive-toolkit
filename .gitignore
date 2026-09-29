@@ -1,0 +1,15 @@
+.env
+*.db
+*.sqlite
+
+data/*
+!data/.gitkeep
+
+playwright/.auth/
+browser-profile/
+cookies*
+session*
+
+__pycache__/
+.venv/
+node_modules/
