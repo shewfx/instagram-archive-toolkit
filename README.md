@@ -167,6 +167,29 @@ status`, or read the newest file in `data\logs\`.
 To retry failed Reels, set them back to `pending` in `data/reels.db`
 (`UPDATE reels SET status = 'pending' WHERE status = 'failed'`).
 
+## Searching liked and saved posts
+
+Offline keyword search over every liked or saved Reel and post in the export (`/reel/` and
+`/p/`). Index the export once; this writes `data/liked_posts_export.json` and
+`data/saved_posts_export.json`:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.cli build-search `
+  --liked "<export>\your_instagram_activity\likes\liked_posts.html" `
+  --saved "<export>\your_instagram_activity\saved\saved_posts.html"
+```
+
+Then search, case-insensitively, captions, hashtags, usernames and owner names. Results are
+newest first, with the like/save time in local time:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.cli search-liked "harry potter"
+.\.venv\Scripts\python.exe -m src.cli search-saved "resident evil"
+.\.venv\Scripts\python.exe -m src.cli search-all "gym motivation"
+```
+
+Rerun `build-search` after downloading a newer export.
+
 ## Optional: scanning the likes page
 
 **Not needed for the main Jan 2025+ migration.** The export covers that history completely and

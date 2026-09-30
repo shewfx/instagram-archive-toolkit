@@ -11,6 +11,9 @@ DB_PATH = ROOT / "data" / "reels.db"
 EXPORT_PATH = ROOT / "data" / "liked_reels_export.json"
 # parse-export keeps Reels liked at or after this moment: 2025-01-01 00:00 UTC.
 EXPORT_SINCE = datetime(2025, 1, 1, tzinfo=ZoneInfo("UTC"))
+# All liked / saved posts and Reels with their metadata, written by `build-search`.
+LIKED_POSTS_PATH = ROOT / "data" / "liked_posts_export.json"
+SAVED_POSTS_PATH = ROOT / "data" / "saved_posts_export.json"
 
 # Uses the locally installed Google Chrome rather than Playwright's bundled Chromium.
 BROWSER_CHANNEL = "chrome"

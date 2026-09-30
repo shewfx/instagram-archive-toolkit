@@ -1,5 +1,6 @@
 import argparse
 import json
+import sys
 from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,6 +119,56 @@ def cmd_import_export(args):
     print(f"Unique Reels in the database: {before} -> {total}")
 
 
+SEARCH_MANIFESTS = {"liked": config.LIKED_POSTS_PATH, "saved": config.SAVED_POSTS_PATH}
+
+
+def cmd_build_search(args):
+    from src.instagram.export import parse_posts
+
+    if not (args.liked or args.saved):
+        raise SystemExit("Give --liked and/or --saved.")
+    for source, html_path in (("liked", args.liked), ("saved", args.saved)):
+        if not html_path:
+            continue
+        records = parse_posts(Path(html_path).read_text(encoding="utf-8"), source)
+        out = SEARCH_MANIFESTS[source]
+        out.parent.mkdir(exist_ok=True)
+        out.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
+        reels = sum(r["post_type"] == "reel" for r in records)
+        print(f"{source}: {len(records)} posts ({reels} Reels) -> {out}")
+
+
+def search(sources, query):
+    """Print matches from the given manifests, newest first. Returns the matches."""
+    from src.instagram.export import search_posts, snippet
+
+    # Captions carry emoji and non-Latin text; a redirected Windows console would choke on them.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    records = []
+    for source in sources:
+        path = SEARCH_MANIFESTS[source]
+        if not path.exists():
+            raise SystemExit(f"{path} not found. Run build-search --{source} <{source}_posts.html>")
+        records += json.loads(path.read_text(encoding="utf-8"))
+    hits = search_posts(records, query)
+    for r in hits:
+        when = datetime.fromisoformat(r["timestamp"]).astimezone()
+        print(f"[{r['source'].upper()}] {when:%Y-%m-%d %H:%M}  {r['url']}")
+        owner = " ".join(
+            filter(
+                None,
+                [r["username"] and "@" + r["username"], r["owner_name"] and f"({r['owner_name']})"],
+            )
+        )
+        if owner:
+            print(f"    {owner}")
+        if r["caption"]:
+            print(f"    {snippet(r['caption'], query)}")
+        print()
+    print(f"{len(hits)} result{'s' * (len(hits) != 1)} for {query!r}")
+    return hits
+
+
 def _local_now():
     return datetime.now(timezone.utc).astimezone()
 
@@ -212,6 +263,22 @@ def main(argv=None):
         help="open each Reel and report its Save state; click nothing, store nothing",
     )
     save.set_defaults(func=cmd_save)
+    build = sub.add_parser(
+        "build-search", help="index liked/saved posts from an Instagram data export (offline)"
+    )
+    build.add_argument("--liked", metavar="HTML", help="path to likes/liked_posts.html")
+    build.add_argument("--saved", metavar="HTML", help="path to saved/saved_posts.html")
+    build.set_defaults(func=cmd_build_search)
+    for name, sources in (
+        ("search-liked", ["liked"]),
+        ("search-saved", ["saved"]),
+        ("search-all", ["liked", "saved"]),
+    ):
+        s = sub.add_parser(
+            name, help=f"search {' and '.join(sources)} posts by caption, hashtag or owner"
+        )
+        s.add_argument("query", help='keyword or phrase, e.g. "harry potter"')
+        s.set_defaults(func=lambda args, sources=sources: search(sources, args.query))
     sub.add_parser("status", help="show counts by status").set_defaults(func=cmd_status)
     sub.add_parser("list-pending", help="list Reels not yet processed").set_defaults(
         func=cmd_list_pending
