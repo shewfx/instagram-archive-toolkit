@@ -1,7 +1,6 @@
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -10,8 +9,10 @@ PROFILE_DIR = ROOT / "browser-profile"
 DB_PATH = ROOT / "data" / "reels.db"
 # Reels parsed from Instagram's data export by `parse-export`.
 EXPORT_PATH = ROOT / "data" / "liked_reels_export.json"
-# parse-export keeps Reels liked at or after this moment: 2025-01-01 00:00 UTC.
-EXPORT_SINCE = datetime(2025, 1, 1, tzinfo=ZoneInfo("UTC"))
+# parse-export keeps Reels liked at or after this moment. Override it in data/settings.json with
+# an ISO time and your own offset, e.g. "EXPORT_SINCE": "2025-01-01T00:00:00+02:00".
+DEFAULT_EXPORT_SINCE = datetime(2025, 1, 1, tzinfo=timezone.utc)
+EXPORT_SINCE = DEFAULT_EXPORT_SINCE
 # All liked / saved posts and Reels with their metadata, written by `build-search`.
 LIKED_POSTS_PATH = ROOT / "data" / "liked_posts_export.json"
 SAVED_POSTS_PATH = ROOT / "data" / "saved_posts_export.json"
@@ -74,6 +75,17 @@ def _batch_size(value):
     return size
 
 
+def _since(value):
+    if isinstance(value, datetime):
+        moment = value
+    else:
+        # fromisoformat only accepts a trailing "Z" from Python 3.11.
+        moment = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+    if moment.tzinfo is None:
+        raise ValueError("EXPORT_SINCE needs a time zone, e.g. 2025-01-01T00:00:00Z")
+    return moment
+
+
 def _required_path(value):
     if not _path(value):
         raise ValueError("path must not be empty")
@@ -87,13 +99,20 @@ EDITABLE = {
     "PROFILE_DIR": _required_path,
     "ITEM_DELAY": _item_delay,
     "BATCH_SIZE": _batch_size,
+    "EXPORT_SINCE": _since,
 }
 
 
+def _json_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
 def current_settings() -> dict:
-    return {
-        k: (str(v) if isinstance(v, Path) else v) for k, v in globals().items() if k in EDITABLE
-    }
+    return {k: _json_value(v) for k, v in globals().items() if k in EDITABLE}
 
 
 def apply_settings(values: dict) -> None:

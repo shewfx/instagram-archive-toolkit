@@ -56,6 +56,11 @@ A Chrome window opens at the Instagram login page. Log in yourself (including an
 the window. The session is kept in `browser-profile/`, a Chrome profile separate from your normal
 one, and reused by every later run. If it expires, the saver stops and asks you to log in again.
 
+> **Your login stays on your computer.** The repository ships with no browser profile, cookies or
+> account data. Everyone creates their own `browser-profile/` locally with `login`. It holds live
+> session cookies, so anyone who gets a copy can act as your Instagram account. It is gitignored:
+> **never commit it, force-add it, upload it or share it.** See [Your data](#your-data).
+
 ## Quick start
 
 With an export unzipped outside this folder (`<export>` below):
@@ -135,8 +140,9 @@ python -m src.cli import-export
 ```
 
 - Only explicit `/reel/` links are kept. Photos and other posts (`/p/`) are skipped.
-- Only Reels liked at or after `EXPORT_SINCE` in `src/config.py` are kept (default 2025-01-01
-  00:00 UTC).
+- Only Reels liked at or after `EXPORT_SINCE` are kept. The default is 2025-01-01 00:00 UTC. To
+  use your own cutoff and time zone, add it to `data/settings.json`, e.g.
+  `"EXPORT_SINCE": "2024-06-01T00:00:00+02:00"`.
 - Each shortcode appears once. The export writes times in US Pacific time wherever you are, and
   `liked_at` is converted to UTC.
 
@@ -293,7 +299,7 @@ It saves them to `data/settings.json`, which the CLI reads too, so both always a
 | `ACTION_DELAY` | 2.0 s | No | Pause between a Reel's page loading and clicking Save |
 | `NAV_TIMEOUT` | 20 s | No | Wait for a page or control before treating it as failed |
 | `MAX_CONSECUTIVE_ERRORS` | 3 | No | Failed Reels in a row that end a run |
-| `EXPORT_SINCE` | 2025-01-01 (UTC) | No | Oldest like `parse-export` keeps |
+| `EXPORT_SINCE` | 2025-01-01T00:00:00Z | In `data/settings.json` | Oldest like `parse-export` keeps. An ISO time with an offset. |
 | `SCROLL_DELAY`, `MAX_IDLE_SCROLLS`, `STOP_AFTER_KNOWN` | 3.0 s, 4, 10 | No | Likes-page scanner pacing |
 
 Database and profile changes apply to the next saver run.
@@ -311,7 +317,9 @@ Everything personal stays on your computer and out of git:
 | `data/logs/` | One log per saver run |
 
 All of these are in `.gitignore`. **Never commit them, never force-add them, and never share
-them.** Keep the Instagram export itself outside this repository too.
+them.** Keep the Instagram export itself outside this repository too. `.gitignore` also covers
+export folders, `.zip` files, `.env` files, logs and database files copied in by mistake, but it is
+a safety net, not a place to keep them.
 
 ## Optional: scanning the likes page
 
@@ -385,3 +393,7 @@ python -m pytest
 ruff format src tests
 ruff check src tests
 ```
+
+## License
+
+[MIT](LICENSE)

@@ -45,3 +45,20 @@ def test_invalid_settings_change_nothing(settings_file, values):
 def test_empty_export_path_means_not_configured(settings_file):
     config.apply_settings({"SAVED_HTML": ""})
     assert config.SAVED_HTML is None
+
+
+def test_export_cutoff_can_be_set_with_any_offset(settings_file):
+    from datetime import datetime, timedelta, timezone
+
+    config.save_settings({"EXPORT_SINCE": "2025-01-01T00:00:00+02:00"})
+    assert config.EXPORT_SINCE == datetime(2024, 12, 31, 22, 0, tzinfo=timezone.utc)
+    assert config.EXPORT_SINCE.utcoffset() == timedelta(hours=2)
+    stored = json.loads(settings_file.read_text(encoding="utf-8"))
+    assert stored["EXPORT_SINCE"] == "2025-01-01T00:00:00+02:00"
+    config.apply_settings({"EXPORT_SINCE": "2025-01-01T00:00:00Z"})
+    assert config.EXPORT_SINCE == config.DEFAULT_EXPORT_SINCE
+
+
+def test_export_cutoff_needs_a_time_zone(settings_file):
+    with pytest.raises(ValueError, match="time zone"):
+        config.apply_settings({"EXPORT_SINCE": "2025-01-01T00:00:00"})

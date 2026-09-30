@@ -30,15 +30,16 @@ def test_pacific_times_become_utc_in_export_order():
     ]
 
 
-def test_cutoff_is_midnight_utc():
-    assert config.EXPORT_SINCE == datetime(2025, 1, 1, 0, 0, tzinfo=timezone.utc)
+def test_default_cutoff_is_midnight_utc():
+    # The default, not config.EXPORT_SINCE: a local data/settings.json may override that.
+    assert config.DEFAULT_EXPORT_SINCE == datetime(2025, 1, 1, tzinfo=timezone.utc)
     html = "".join(
         [
             reel("AT", "Dec 31, 2024 4:00 pm"),  # PST, UTC-8: exactly 2025-01-01 00:00 UTC
             reel("BEFORE", "Dec 31, 2024 3:59 pm"),  # one minute earlier
         ]
     )
-    manifest, _ = build_manifest(html, config.EXPORT_SINCE)
+    manifest, _ = build_manifest(html, config.DEFAULT_EXPORT_SINCE)
     assert [r["shortcode"] for r in manifest] == ["AT"]
     assert manifest[0]["liked_at"] == "2025-01-01T00:00:00+00:00"
 
@@ -54,7 +55,7 @@ def test_manifest_keeps_recent_reels_once_in_export_order():
             reel("OLD", "Dec 30, 2024 11:53 pm"),
         ]
     )
-    manifest, stats = build_manifest(html, config.EXPORT_SINCE)
+    manifest, stats = build_manifest(html, config.DEFAULT_EXPORT_SINCE)
     assert [r["shortcode"] for r in manifest] == ["AAA", "B-b_1"]
     assert manifest[0] == {
         "shortcode": "AAA",

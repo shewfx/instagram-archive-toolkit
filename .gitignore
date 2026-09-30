@@ -1,15 +1,42 @@
+# Secrets and environment
 .env
-*.db
-*.sqlite
+.env.*
 
+# Runtime data: progress database, backups, search manifests, settings, logs.
+# Everything the tool writes goes under data/ by default.
 data/*
 !data/.gitkeep
+# Databases wherever they end up (Settings can move the DB), with SQLite sidecars and backups.
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite3
+*.log
 
-playwright/.auth/
+# Browser login: session cookies. Anyone with these can act as the account.
+# Named by data format, not prefix, so source files like session.py or cookies.py stay tracked.
 browser-profile/
-cookies*
-session*
+playwright/.auth/
+storage_state*.json
+auth*.json
+*cookies*.txt
+*cookies*.json
+*cookies*.sqlite
+Cookies
+Cookies-journal
+*session*.json
+*.session
+sessions/
 
+# Raw Instagram "Download your information" exports, if unpacked or copied here
+instagram-*/
+your_instagram_activity/
+*.zip
+
+# Python and tooling
 __pycache__/
 .venv/
+.pytest_cache/
+.ruff_cache/
 node_modules/

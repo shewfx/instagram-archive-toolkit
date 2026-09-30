@@ -162,7 +162,7 @@ def liked_items(page: Page):
     while True:
         if not page.url.startswith(config.LIKES_URL):
             # Leaving the grid resets it, so reopen and let load_tile scroll back down.
-            # ponytail: O(n^2) scrolling for large histories; see README "Why first scans are slow".
+            # ponytail: O(n^2) scrolling for large histories; see README "Why it's slow".
             time.sleep(config.ITEM_DELAY)
             open_likes(page)
         tile = load_tile(page, index)
