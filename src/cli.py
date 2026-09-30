@@ -2,21 +2,15 @@ import argparse
 import json
 import sys
 from contextlib import suppress
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from src import config, database
+from src import config, database, services
 from src.instagram.urls import parse_post_url, post_url
-
-
-def open_context(p):
-    config.PROFILE_DIR.mkdir(exist_ok=True)
-    return p.chromium.launch_persistent_context(
-        config.PROFILE_DIR, channel=config.BROWSER_CHANNEL, headless=False, no_viewport=True
-    )
+from src.services import open_context
 
 
 def cmd_login(args):
@@ -66,6 +60,7 @@ def cmd_status(args):
     print(f"Saved: {c['saved']}")
     print(f"Failed: {c['failed']}")
     print(f"Unavailable: {c['unavailable']}")
+    print(f"Skipped: {c['skipped']}")
     print(f"Historical cutoff: {cutoff or 'not set'}")
 
 
@@ -123,17 +118,13 @@ SEARCH_MANIFESTS = {"liked": config.LIKED_POSTS_PATH, "saved": config.SAVED_POST
 
 
 def cmd_build_search(args):
-    from src.instagram.export import parse_posts
-
     if not (args.liked or args.saved):
         raise SystemExit("Give --liked and/or --saved.")
     for source, html_path in (("liked", args.liked), ("saved", args.saved)):
         if not html_path:
             continue
-        records = parse_posts(Path(html_path).read_text(encoding="utf-8"), source)
         out = SEARCH_MANIFESTS[source]
-        out.parent.mkdir(exist_ok=True)
-        out.write_text(json.dumps(records, indent=2, ensure_ascii=False), encoding="utf-8")
+        records = services.build_index(source, html_path, out)
         reels = sum(r["post_type"] == "reel" for r in records)
         print(f"{source}: {len(records)} posts ({reels} Reels) -> {out}")
 
@@ -144,12 +135,10 @@ def search(sources, query):
 
     # Captions carry emoji and non-Latin text; a redirected Windows console would choke on them.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    records = []
-    for source in sources:
-        path = SEARCH_MANIFESTS[source]
-        if not path.exists():
-            raise SystemExit(f"{path} not found. Run build-search --{source} <{source}_posts.html>")
-        records += json.loads(path.read_text(encoding="utf-8"))
+    try:
+        records = services.load_posts(SEARCH_MANIFESTS, sources)
+    except FileNotFoundError as e:
+        raise SystemExit(str(e)) from None
     hits = search_posts(records, query)
     for r in hits:
         when = datetime.fromisoformat(r["timestamp"]).astimezone()
@@ -169,44 +158,8 @@ def search(sources, query):
     return hits
 
 
-def _local_now():
-    return datetime.now(timezone.utc).astimezone()
-
-
 def cmd_save(args):
-    from src.instagram.saver import save
-
-    config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = config.LOG_DIR / f"save-{_local_now():%Y%m%d-%H%M%S}.log"
-    with open(log_path, "a", encoding="utf-8") as log_file:
-
-        def log(msg=""):
-            line = f"{_local_now():%Y-%m-%d %H:%M:%S}  {msg}"
-            print(line, flush=True)
-            log_file.write(line + "\n")
-            log_file.flush()
-
-        conn = database.connect(config.DB_PATH)
-        mode = "DRY RUN: nothing is clicked or stored. " if args.dry_run else ""
-        scope = "all pending Reels" if args.all else f"up to {args.limit} Reels"
-        pending = database.status_counts(conn)["pending"]
-        log(f"{mode}Saving {scope}, oldest like first. Pending: {pending}. Log: {log_path}")
-        try:
-            with sync_playwright() as p:
-                ctx = open_context(p)
-                try:
-                    page = ctx.pages[0] if ctx.pages else ctx.new_page()
-                    stats = save(page, conn, args.limit, args.dry_run, log=log)
-                finally:
-                    with suppress(PlaywrightError):  # browser may already be gone after Ctrl+C
-                        ctx.close()
-            pending = database.status_counts(conn)["pending"]
-        finally:
-            conn.close()
-        log(stats.stop_reason)
-        log(f"Final: {stats.summary(pending)}")
-        if stats.processed:
-            log(f"Rate: {3600 / stats.seconds_per_reel():.0f} Reels/hour")
+    services.save_session(args.limit, args.dry_run, echo=lambda line: print(line, flush=True))
 
 
 def positive_int(value):

@@ -127,3 +127,205 @@ def test_dry_run_stores_nothing(conn):
     assert stats.processed == 4
     assert set(statuses(conn).values()) == {"pending"}
     assert conn.execute("SELECT MAX(attempts) FROM reels").fetchone()[0] == 0
+
+
+def test_should_stop_ends_between_reels_and_stats_are_live(conn):
+    from src.instagram.saver import SaveStats
+
+    stats, seen_current = SaveStats(), []
+
+    def save_one(code):
+        seen_current.append(stats.current)
+        return "saved"
+
+    rows = database.pending_to_save(conn)
+    result = run(
+        rows,
+        conn,
+        save_one,
+        log=lambda _m: None,
+        stats=stats,
+        should_stop=lambda: stats.processed >= 2,
+    )
+    assert result is stats
+    assert seen_current == ["A", "B"]
+    assert stats.current is None
+    assert stats.stop_reason == "Stopped on request. Progress is saved."
+    assert statuses(conn) == {"A": "saved", "B": "saved", "C": "pending", "D": "pending"}
+
+
+class FakePage:
+    """Just enough of a Page for `saver`: it records the response listener."""
+
+    def on(self, event, callback):
+        assert event == "response"
+        self.respond = lambda status: callback(type("R", (), {"status": status, "url": "u"}))
+
+
+@pytest.fixture
+def fake_browser(monkeypatch):
+    """Patch the Playwright steps; `script` maps shortcode -> (status codes seen, state/exception)."""
+    from src.instagram import saver as saver_mod
+
+    monkeypatch.setattr(config, "ITEM_DELAY", 0)
+    monkeypatch.setattr(config, "ACTION_DELAY", 0)
+    page, script, opened = FakePage(), {}, []
+
+    def open_reel(_page, code):
+        opened.append(code)
+        statuses_seen, result = script.get(code, ((), "unsaved"))
+        for status in statuses_seen:
+            page.respond(status)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(saver_mod, "open_reel", open_reel)
+    monkeypatch.setattr(saver_mod, "click_save", lambda _page: None)
+    return saver_mod, page, script, opened
+
+
+def run_saver(conn, fake_browser):
+    saver_mod, page, _script, _opened = fake_browser
+    return run(
+        database.pending_to_save(conn), conn, saver_mod.saver(page, False), log=lambda _m: None
+    )
+
+
+def test_http_429_after_a_confirmed_save_records_it_then_stops(conn, fake_browser):
+    _, _, script, opened = fake_browser
+    script["B"] = ((429,), "unsaved")
+    stats = run_saver(conn, fake_browser)
+    assert opened == ["A", "B"]
+    assert "HTTP 429" in stats.stop_reason and stats.stop_reason.startswith("STOPPED")
+    assert statuses(conn) == {"A": "saved", "B": "saved", "C": "pending", "D": "pending"}
+
+
+def test_http_429_with_a_failing_reel_leaves_it_pending(conn, fake_browser):
+    _, _, script, opened = fake_browser
+    script["A"] = ((200, 429), ValueError("no Save button appeared"))
+    stats = run_saver(conn, fake_browser)
+    assert opened == ["A"]
+    assert "HTTP 429" in stats.stop_reason and stats.errors == 0
+    assert set(statuses(conn).values()) == {"pending"}
+
+
+def test_http_429_never_marks_unavailable(conn, fake_browser):
+    _, _, script, _ = fake_browser
+    script["A"] = ((429,), "unavailable")
+    stats = run_saver(conn, fake_browser)
+    assert "HTTP 429" in stats.stop_reason
+    assert statuses(conn)["A"] == "pending"
+
+
+def test_other_statuses_do_not_stop(conn, fake_browser):
+    _, _, script, opened = fake_browser
+    script["A"] = ((404, 500), "unsaved")
+    stats = run_saver(conn, fake_browser)
+    assert stats.stop_reason == "Done." and opened == ["A", "B", "C", "D"]
+
+
+class FakeClock:
+    """Stands in for the saver module's `time`: monotonic() is whatever the test sets."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    from src.instagram import saver as saver_mod
+
+    c = FakeClock()
+    monkeypatch.setattr(saver_mod, "time", c)
+    return c
+
+
+def timed_run(conn, clock, save_one, **kw):
+    """Run with stats started on the fake clock; each Reel takes 10 fake seconds."""
+    from src.instagram.saver import SaveStats
+
+    stats = SaveStats(started=clock.now)
+
+    def ten_seconds_each(code):
+        clock.now += 10
+        return save_one(code)
+
+    rows = database.pending_to_save(conn)
+    run(rows, conn, ten_seconds_each, log=lambda _m: None, stats=stats, **kw)
+    return stats
+
+
+def assert_frozen(stats, clock):
+    before = (stats.elapsed(), stats.seconds_per_reel(), stats.summary(0))
+    clock.now += 3600  # an hour later, e.g. the dashboard still refreshing
+    assert (stats.elapsed(), stats.seconds_per_reel(), stats.summary(0)) == before
+
+
+def test_elapsed_increases_while_running(clock):
+    from src.instagram.saver import SaveStats
+
+    stats = SaveStats(started=clock.now, processed=2)
+    clock.now += 5
+    assert stats.elapsed() == 5 and stats.seconds_per_reel() == 2.5
+    clock.now += 5
+    assert stats.elapsed() == 10 and stats.finished is None
+
+
+def test_elapsed_freezes_after_normal_completion(conn, clock):
+    stats = timed_run(conn, clock, lambda _c: "saved")
+    assert stats.stop_reason == "Done."
+    assert stats.elapsed() == 40 and stats.seconds_per_reel() == 10
+    assert_frozen(stats, clock)
+
+
+def test_elapsed_freezes_after_safe_stop(conn, clock):
+    stats = timed_run(conn, clock, lambda _c: "saved", should_stop=lambda: clock.now >= 1020)
+    assert stats.stop_reason.startswith("Stopped on request")
+    assert stats.elapsed() == 20
+    assert_frozen(stats, clock)
+
+
+def test_elapsed_freezes_after_http_429(conn, clock, fake_browser):
+    from src.instagram.saver import SaveStats
+
+    saver_mod, page, script, _ = fake_browser
+    script["B"] = ((429,), ValueError("no Save button appeared"))
+    stats = SaveStats(started=clock.now)
+    save_one = saver_mod.saver(page, False)
+
+    def ten_seconds_each(code):
+        clock.now += 10
+        return save_one(code)
+
+    run(database.pending_to_save(conn), conn, ten_seconds_each, log=lambda _m: None, stats=stats)
+    assert "HTTP 429" in stats.stop_reason
+    assert stats.elapsed() == 20
+    assert_frozen(stats, clock)
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [
+        Blocked("login page."),
+        Blocked("challenge page."),
+        Blocked("Instagram showed a warning while saving."),
+        PlaywrightError("Target page, context or browser has been closed"),
+    ],
+)
+def test_elapsed_freezes_after_warnings_and_errors(conn, clock, stop):
+    def save_one(code):
+        if code == "B":
+            raise stop
+        return "saved"
+
+    stats = timed_run(conn, clock, save_one)
+    assert stats.stop_reason.startswith("STOPPED")
+    assert stats.elapsed() == 20
+    assert_frozen(stats, clock)

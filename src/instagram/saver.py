@@ -29,10 +29,22 @@ class SaveStats:
     errors: int = 0
     error_streak: int = 0
     started: float = field(default_factory=time.monotonic)
+    # Set once the run ends, however it ends; elapsed time is frozen from then on.
+    finished: float | None = None
     stop_reason: str = ""
+    # Shortcode being worked on, for live display.
+    current: str | None = None
+
+    def finish(self) -> None:
+        if self.finished is None:
+            self.finished = time.monotonic()
+
+    def elapsed(self) -> float:
+        end = self.finished if self.finished is not None else time.monotonic()
+        return end - self.started
 
     def seconds_per_reel(self) -> float:
-        return (time.monotonic() - self.started) / self.processed if self.processed else 0.0
+        return self.elapsed() / self.processed if self.processed else 0.0
 
     def summary(self, pending: int) -> str:
         o, avg = self.outcomes, self.seconds_per_reel()
@@ -40,7 +52,7 @@ class SaveStats:
             f"{self.processed} processed | newly saved {o['saved']} | "
             f"already saved {o['already_saved']} | unavailable {o['unavailable']} | "
             f"failed {self.errors} | pending {pending} | "
-            f"elapsed {_hms(time.monotonic() - self.started)} | {avg:.1f} s/Reel | "
+            f"elapsed {_hms(self.elapsed())} | {avg:.1f} s/Reel | "
             f"remaining ~{_hms(pending * avg)}"
         )
 
@@ -64,16 +76,22 @@ def run(
     dry_run: bool = False,
     log=print,
     progress_every: int = config.PROGRESS_EVERY,
+    stats: SaveStats | None = None,
+    should_stop: Callable[[], bool] = lambda: False,
 ) -> SaveStats:
     """Core save loop, independent of the browser.
 
     save_one(shortcode) returns an outcome from STATUS, raises ValueError/PlaywrightError for a
     failed Reel, or Blocked to stop everything. Each outcome is committed before the next Reel.
+    Pass `stats` to watch progress from another thread; should_stop() is checked between Reels.
     """
-    stats = SaveStats()
+    stats = stats or SaveStats()
     try:
         for row in reels:
-            code = row["shortcode"]
+            if should_stop():
+                stats.stop_reason = "Stopped on request. Progress is saved."
+                break
+            code = stats.current = row["shortcode"]
             stats.processed += 1
             try:
                 outcome = save_one(code)
@@ -111,6 +129,8 @@ def run(
         )
     except KeyboardInterrupt:
         stats.stop_reason = "Interrupted. Progress is saved."
+    stats.current = None
+    stats.finish()
     return stats
 
 
@@ -156,10 +176,34 @@ def click_save(page: Page) -> None:
         raise ValueError("Save was clicked but the control never changed to Remove") from None
 
 
+THROTTLED = "Instagram answered HTTP 429 (Too Many Requests). Stop using the tool for a while."
+
+
 def saver(page: Page, dry_run: bool) -> Callable[[str], str]:
-    """Build save_one(shortcode) for `run`, driving `page`."""
+    """Build save_one(shortcode) for `run`, driving `page`.
+
+    Any HTTP 429 seen by the page stops the run before the next Reel. If the current Reel then
+    fails, it is left pending rather than marked failed.
+    """
+    throttled = []
+    page.on("response", lambda r: r.status == 429 and throttled.append(r.url))
 
     def save_one(shortcode: str) -> str:
+        if throttled:
+            raise Blocked(THROTTLED)
+        try:
+            outcome = _save_one(shortcode)
+        except (PlaywrightError, ValueError):
+            if throttled:
+                raise Blocked(THROTTLED) from None
+            raise
+        # Remove was seen, so the Reel really is saved. Anything else, e.g. "this page isn't
+        # available", may be the 429 talking: leave it pending.
+        if throttled and outcome not in ("saved", "already_saved"):
+            raise Blocked(THROTTLED)
+        return outcome
+
+    def _save_one(shortcode: str) -> str:
         state = open_reel(page, shortcode)
         if state == "unsaved":
             if dry_run:
@@ -177,5 +221,7 @@ def saver(page: Page, dry_run: bool) -> Callable[[str], str]:
     return save_one
 
 
-def save(page: Page, conn, limit=None, dry_run=False, log=print) -> SaveStats:
-    return run(database.pending_to_save(conn, limit), conn, saver(page, dry_run), dry_run, log)
+def save(page: Page, conn, limit=None, dry_run=False, log=print, **kw) -> SaveStats:
+    """kw: `stats` and `should_stop`, passed to `run`."""
+    reels = database.pending_to_save(conn, limit)
+    return run(reels, conn, saver(page, dry_run), dry_run, log, **kw)

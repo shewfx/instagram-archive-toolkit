@@ -167,6 +167,33 @@ status`, or read the newest file in `data\logs\`.
 To retry failed Reels, set them back to `pending` in `data/reels.db`
 (`UPDATE reels SET status = 'pending' WHERE status = 'failed'`).
 
+## Control panel (UI)
+
+A local dashboard over the same code the CLI runs. Install once, then launch:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m src.ui
+```
+
+Open http://localhost:8080. It listens on this computer only (127.0.0.1).
+
+- **Dashboard**: counts, overall progress, and the saver. Start / Resume runs a batch of 10, 25,
+  50 or all pending Reels in the background, using the logged-in `browser-profile/` exactly like
+  `save`: oldest like first, each outcome committed before the next Reel, and an automatic stop
+  on login/challenge/action warnings or any HTTP 429. Stop safely finishes the current Reel,
+  then stops. Only one saver runs at a time. Don't run `save` from the CLI at the same time:
+  Chrome refuses to open the same profile twice, so that run would stop with an error.
+- **Search**: the offline archive search (All / Liked / Saved) over the `build-search` index.
+- **Failed items**: open, reset to pending, or mark skipped (never retried); reset all asks first.
+- **Exports**: export file status and Rebuild Search Index (same as `build-search`).
+- **Settings**: export paths, database, profile folder, pause per Reel (can only be raised above
+  the 5 s default) and default batch size, saved to `data/settings.json`. The CLI reads it too.
+- **Logs**: live saver output, and earlier runs from `data/logs/` (read-only).
+
+Closing the browser tab does not stop the saver. Ctrl+C on the server stops it after the current
+Reel.
+
 ## Searching liked and saved posts
 
 Offline keyword search over every liked or saved Reel and post in the export (`/reel/` and

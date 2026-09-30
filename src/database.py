@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS reels (
     reel_url      TEXT NOT NULL,
     discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
     status        TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'saved', 'failed', 'unavailable')),
+                  CHECK (status IN ('pending', 'saved', 'failed', 'unavailable', 'skipped')),
     attempts      INTEGER NOT NULL DEFAULT 0,
     last_error    TEXT,
     processed_at  TEXT,
@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS settings (
 """
 
 HISTORICAL_CUTOFF = "historical_cutoff_shortcode"
-STATUSES = ("pending", "saved", "failed", "unavailable")
+# skipped: set by hand (UI "Mark skipped") so the saver never retries it.
+STATUSES = ("pending", "saved", "failed", "unavailable", "skipped")
+_COLUMNS = (
+    "id, shortcode, reel_url, discovered_at, status, attempts, last_error, processed_at, liked_at"
+)
 
 
 def connect(path) -> sqlite3.Connection:
@@ -36,7 +40,28 @@ def connect(path) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     if "liked_at" not in {r["name"] for r in conn.execute("PRAGMA table_info(reels)")}:
         conn.execute("ALTER TABLE reels ADD COLUMN liked_at TEXT")  # Phase 1 database
+    table_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'reels'").fetchone()[0]
+    if "'skipped'" not in table_sql:
+        _rebuild_reels(conn)
     return conn
+
+
+def _rebuild_reels(conn) -> None:
+    """Recreate reels with the current CHECK constraint, keeping every row. All or nothing.
+
+    SQLite cannot alter a CHECK in place. The explicit BEGIN matters: sqlite3 does not open a
+    transaction for DDL by itself.
+    """
+    conn.execute("BEGIN")
+    try:
+        conn.execute("ALTER TABLE reels RENAME TO reels_old")
+        conn.execute(REELS_TABLE)
+        conn.execute(f"INSERT INTO reels ({_COLUMNS}) SELECT {_COLUMNS} FROM reels_old")
+        conn.execute("DROP TABLE reels_old")
+    except BaseException:
+        conn.rollback()
+        raise
+    conn.commit()
 
 
 def get_setting(conn, key: str) -> str | None:
@@ -113,3 +138,21 @@ def mark(conn, shortcode: str, status: str, error: str | None = None) -> None:
             "processed_at = ? WHERE shortcode = ?",
             (status, error, datetime.now(timezone.utc).isoformat(timespec="seconds"), shortcode),
         )
+
+
+def list_failed(conn) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM reels WHERE status = 'failed' ORDER BY processed_at DESC, id"
+    ).fetchall()
+
+
+def set_status(conn, shortcode: str, status: str) -> None:
+    """Change a Reel's status by hand, e.g. failed -> pending or skipped. Keeps its history."""
+    with conn:
+        conn.execute("UPDATE reels SET status = ? WHERE shortcode = ?", (status, shortcode))
+
+
+def reset_failed(conn) -> int:
+    """Put every failed Reel back to pending. Returns how many."""
+    with conn:
+        return conn.execute("UPDATE reels SET status = 'pending' WHERE status = 'failed'").rowcount

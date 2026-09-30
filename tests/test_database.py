@@ -45,6 +45,7 @@ def test_status_counts(conn):
         "saved": 0,
         "failed": 0,
         "unavailable": 0,
+        "skipped": 0,
         "total": 0,
     }
     for code in ["A", "B", "C", "D"]:
@@ -52,7 +53,14 @@ def test_status_counts(conn):
     conn.execute("UPDATE reels SET status = 'saved' WHERE shortcode = 'A'")
     conn.execute("UPDATE reels SET status = 'failed' WHERE shortcode = 'B'")
     counts = database.status_counts(conn)
-    assert counts == {"pending": 2, "saved": 1, "failed": 1, "unavailable": 0, "total": 4}
+    assert counts == {
+        "pending": 2,
+        "saved": 1,
+        "failed": 1,
+        "unavailable": 0,
+        "skipped": 0,
+        "total": 4,
+    }
 
 
 def test_list_pending_only_returns_pending_in_discovery_order(conn):
@@ -190,3 +198,64 @@ def test_mark_records_status_time_and_attempt(conn):
     assert (row["status"], row["attempts"]) == ("failed", 1)
     assert row["last_error"] == "no Save button appeared"
     assert datetime.fromisoformat(row["processed_at"]).utcoffset().total_seconds() == 0
+
+
+OLD_SCHEMA = """
+CREATE TABLE reels (
+    id            INTEGER PRIMARY KEY,
+    shortcode     TEXT NOT NULL UNIQUE,
+    reel_url      TEXT NOT NULL,
+    discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+    status        TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending', 'saved', 'failed', 'unavailable')),
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    processed_at  TEXT,
+    liked_at      TEXT
+);
+INSERT INTO reels (shortcode, reel_url, status, attempts, last_error, processed_at, liked_at)
+VALUES ('A', 'ua', 'saved', 1, NULL, '2026-01-01', '2025-01-01'),
+       ('B', 'ub', 'failed', 2, 'boom', '2026-01-02', '2025-01-02');
+"""
+
+
+def test_database_without_skipped_is_rebuilt_keeping_every_row(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(OLD_SCHEMA)
+    before = old.execute("SELECT * FROM reels ORDER BY id").fetchall()
+    old.close()
+
+    c = database.connect(path)
+    assert [tuple(r) for r in c.execute("SELECT * FROM reels ORDER BY id")] == before
+    database.set_status(c, "B", "skipped")  # the new CHECK allows it
+    names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert names == {"reels", "settings"}
+    c.close()
+
+
+def test_failed_reels_can_be_listed_reset_or_skipped(conn):
+    for code in "ABCD":
+        database.add_reel(conn, code, "u")
+    for code in "ABC":
+        database.mark(conn, code, "failed", f"err {code}")
+    assert [r["last_error"] for r in database.list_failed(conn)] == ["err A", "err B", "err C"]
+
+    database.set_status(conn, "A", "skipped")
+    database.set_status(conn, "B", "pending")
+    assert [r["shortcode"] for r in database.list_failed(conn)] == ["C"]
+    assert database.reset_failed(conn) == 1
+    assert database.status_counts(conn)["skipped"] == 1
+    # Skipped Reels are never picked up by the saver.
+    assert {r["shortcode"] for r in database.pending_to_save(conn)} == {"B", "C", "D"}
+    assert database.list_failed(conn) == []
+
+
+def test_unknown_status_is_rejected(conn):
+    import sqlite3
+
+    database.add_reel(conn, "A", "u")
+    with pytest.raises(sqlite3.IntegrityError):
+        database.set_status(conn, "A", "bogus")
